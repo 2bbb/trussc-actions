@@ -167,8 +167,8 @@ jobs:
           fi
           found_bin=$(find "$search_dir" -type f \( $exe_names \) \( -perm -u+x -o -perm -g+x -o -perm -o+x \) 2>/dev/null | head -1)
           if [ -n "$found_bin" ]; then
-            echo "bin_path=$build_dir/$found_bin" >> $GITHUB_OUTPUT
-            echo "Found: $build_dir/$found_bin"
+            echo "bin_path=$found_bin" >> $GITHUB_OUTPUT
+            echo "Found: $found_bin"
           else
             echo "bin_path=" >> $GITHUB_OUTPUT
             echo "::warning::testApp binary not found after build"
