@@ -35,10 +35,6 @@ on:
         description: 'Cache key suffix for busting'
         type: string
         default: 'v1'
-      submodules:
-        description: 'Checkout submodules recursively'
-        type: boolean
-        default: true
 
 jobs:
   build:
@@ -61,7 +57,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: ${{ inputs.submodules }}
+          submodules: recursive
           path: ${{ inputs.addon_name }}
 
       - name: Clone TrussC
