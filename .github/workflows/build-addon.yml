@@ -147,6 +147,7 @@ jobs:
           "$trusscli" update -p .
 
       - name: Build
+        id: build
         shell: bash
         run: |
           if [ -n "${{ inputs.test_app }}" ]; then
@@ -157,52 +158,25 @@ jobs:
           cd "$build_dir"
           cmake --build . --config ${{ matrix.config }}
 
+          found_bin=$(find . -type f \( -name "testApp" -o -name "testApp.exe" -o -name "testApp_debug" \) -perm -u+x 2>/dev/null | head -1)
+          if [ -n "$found_bin" ]; then
+            echo "bin_path=$build_dir/$found_bin" >> $GITHUB_OUTPUT
+            echo "Found: $build_dir/$found_bin"
+          else
+            echo "bin_path=" >> $GITHUB_OUTPUT
+            echo "::warning::testApp binary not found after build"
+          fi
+
       - name: Run test app
         id: run
         if: inputs.test_mode != 'build-only'
         shell: bash
         continue-on-error: true
         run: |
-          if [ -n "${{ inputs.test_app }}" ]; then
-            base_dir="$GITHUB_WORKSPACE/${{ inputs.addon_name }}/${{ inputs.test_app }}"
-          else
-            base_dir="$GITHUB_WORKSPACE/test-project"
-          fi
+          found_bin="${{ steps.build.outputs.bin_path }}"
 
-          config="${{ matrix.config }}"
-          config_lower=$(echo "$config" | tr '[:upper:]' '[:lower:]')
-
-          echo "Searching for test binary in $base_dir ..."
-          found_bin=""
-          for candidate in \
-            "$base_dir/bin/${config_lower}/testApp.app/Contents/MacOS/testApp" \
-            "$base_dir/bin/testApp.app/Contents/MacOS/testApp" \
-            "$base_dir/bin/${config}/testApp.exe" \
-            "$base_dir/bin/${config_lower}/testApp.exe" \
-            "$base_dir/bin/testApp.exe" \
-            "$base_dir/bin/${config_lower}/testApp" \
-            "$base_dir/bin/testApp" \
-            "$base_dir/bin/testApp_debug" \
-            "$base_dir/build-${{ matrix.platform }}/bin/${config_lower}/testApp.app/Contents/MacOS/testApp" \
-            "$base_dir/build-${{ matrix.platform }}/bin/testApp.app/Contents/MacOS/testApp" \
-            "$base_dir/build-${{ matrix.platform }}/bin/${config}/testApp.exe" \
-            "$base_dir/build-${{ matrix.platform }}/bin/${config_lower}/testApp.exe" \
-            "$base_dir/build-${{ matrix.platform }}/bin/testApp.exe" \
-            "$base_dir/build-${{ matrix.platform }}/bin/${config_lower}/testApp" \
-            "$base_dir/build-${{ matrix.platform }}/bin/testApp" \
-            "$base_dir/build-${{ matrix.platform }}/bin/testApp_debug"; do
-            if [ -f "$candidate" ]; then
-              found_bin="$candidate"
-              break
-            fi
-          done
-
-          if [ -z "$found_bin" ]; then
-            found_bin=$(find "$base_dir" -type f \( -name "testApp" -o -name "testApp.exe" -o -name "testApp_debug" \) -executable 2>/dev/null | head -1)
-          fi
-
-          if [ -z "$found_bin" ]; then
-            echo "::error::testApp binary not found in $base_dir"
+          if [ -z "$found_bin" ] || [ ! -f "$found_bin" ]; then
+            echo "::error::testApp binary not found"
             echo "exit_code=127" >> $GITHUB_OUTPUT
             exit 0
           fi
