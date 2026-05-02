@@ -59,8 +59,10 @@ jobs:
 | Mode | Behavior |
 |------|----------|
 | `build-only` | Compile only, don't execute |
-| `run` | Compile and execute, ignore exit code (`continue-on-error`) |
-| `test` | Compile and execute, **fail CI on non-zero exit code** |
+| `run` | Compile and execute, tolerate non-zero exit codes, **but crash (segfault etc.) fails CI** |
+| `test` | Compile and execute, **fail CI on any non-zero exit code** |
+
+All modes detect crashes (segfault, abort, etc.) and fail the CI run. If the test binary is not found, CI also fails.
 
 ## How It Works
 

@@ -158,27 +158,75 @@ jobs:
           cmake --build . --config ${{ matrix.config }}
 
       - name: Run test app
+        id: run
         if: inputs.test_mode != 'build-only'
         shell: bash
-        continue-on-error: ${{ inputs.test_mode == 'run' }}
+        continue-on-error: true
         run: |
           if [ -n "${{ inputs.test_app }}" ]; then
-            app_dir="$GITHUB_WORKSPACE/${{ inputs.addon_name }}/${{ inputs.test_app }}"
+            base_dir="$GITHUB_WORKSPACE/${{ inputs.addon_name }}/${{ inputs.test_app }}"
           else
-            app_dir="$GITHUB_WORKSPACE/test-project"
+            base_dir="$GITHUB_WORKSPACE/test-project"
           fi
 
           config="${{ matrix.config }}"
           config_lower=$(echo "$config" | tr '[:upper:]' '[:lower:]')
 
-          if [ "${{ matrix.platform }}" = "macos" ]; then
-            app_path="$app_dir/bin/${config_lower}/testApp.app/Contents/MacOS/testApp"
-            if [ ! -f "$app_path" ]; then
-              app_path="$app_dir/bin/testApp.app/Contents/MacOS/testApp"
+          echo "Searching for test binary in $base_dir ..."
+          found_bin=""
+          for candidate in \
+            "$base_dir/bin/${config_lower}/testApp.app/Contents/MacOS/testApp" \
+            "$base_dir/bin/testApp.app/Contents/MacOS/testApp" \
+            "$base_dir/bin/${config}/testApp.exe" \
+            "$base_dir/bin/${config_lower}/testApp.exe" \
+            "$base_dir/bin/testApp.exe" \
+            "$base_dir/bin/${config_lower}/testApp" \
+            "$base_dir/bin/testApp" \
+            "$base_dir/bin/testApp_debug" \
+            "$base_dir/build-${{ matrix.platform }}/bin/${config_lower}/testApp.app/Contents/MacOS/testApp" \
+            "$base_dir/build-${{ matrix.platform }}/bin/testApp.app/Contents/MacOS/testApp" \
+            "$base_dir/build-${{ matrix.platform }}/bin/${config}/testApp.exe" \
+            "$base_dir/build-${{ matrix.platform }}/bin/${config_lower}/testApp.exe" \
+            "$base_dir/build-${{ matrix.platform }}/bin/testApp.exe" \
+            "$base_dir/build-${{ matrix.platform }}/bin/${config_lower}/testApp" \
+            "$base_dir/build-${{ matrix.platform }}/bin/testApp" \
+            "$base_dir/build-${{ matrix.platform }}/bin/testApp_debug"; do
+            if [ -f "$candidate" ]; then
+              found_bin="$candidate"
+              break
             fi
-            "$app_path"
-          elif [ "${{ matrix.platform }}" = "windows" ]; then
-            "$app_dir/bin/${config}/testApp.exe" 2>/dev/null || "$app_dir/bin/${config_lower}/testApp.exe" 2>/dev/null || "$app_dir/bin/testApp.exe"
-          else
-            "$app_dir/bin/${config_lower}/testApp" 2>/dev/null || "$app_dir/bin/testApp" 2>/dev/null || "$app_dir/bin/testApp_debug"
+          done
+
+          if [ -z "$found_bin" ]; then
+            found_bin=$(find "$base_dir" -type f \( -name "testApp" -o -name "testApp.exe" -o -name "testApp_debug" \) -executable 2>/dev/null | head -1)
+          fi
+
+          if [ -z "$found_bin" ]; then
+            echo "::error::testApp binary not found in $base_dir"
+            echo "exit_code=127" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "Running: $found_bin"
+          "$found_bin"
+          echo "exit_code=$?" >> $GITHUB_OUTPUT
+
+      - name: Check result
+        if: inputs.test_mode != 'build-only'
+        shell: bash
+        run: |
+          CODE=${{ steps.run.outputs.exit_code }}
+          if [ -z "$CODE" ]; then CODE=1; fi
+          echo "Exit code: $CODE"
+          if [ "$CODE" -ge 128 ]; then
+            echo "::error::Process crashed with signal (exit code $CODE)"
+            exit 1
+          fi
+          if [ "$CODE" -eq 127 ]; then
+            echo "::error::testApp binary not found"
+            exit 1
+          fi
+          if [ "${{ inputs.test_mode }}" = "test" ] && [ "$CODE" -ne 0 ]; then
+            echo "::error::Tests failed (exit code $CODE)"
+            exit 1
           fi
