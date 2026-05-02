@@ -114,6 +114,7 @@ jobs:
           chmod +x tools/install_dependencies_linux.sh tools/build_linux.sh
           sudo ./tools/install_dependencies_linux.sh -y
           sed -i 's/read -r -p/#read -r -p/g' tools/build_linux.sh
+          sed -i 's|\"$SCRIPT_DIR/trusscli\"|#&|g' tools/build_linux.sh
           ./tools/build_linux.sh
 
       - name: Generate test project
