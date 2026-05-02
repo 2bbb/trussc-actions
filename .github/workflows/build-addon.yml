@@ -159,11 +159,13 @@ jobs:
           cmake --build . --config ${{ matrix.config }}
 
           if [ -n "${{ inputs.test_app }}" ]; then
+            search_dir="$GITHUB_WORKSPACE/${{ inputs.addon_name }}/${{ inputs.test_app }}"
             exe_names="-name testApp -o -name testApp.exe -o -name testApp_debug"
           else
+            search_dir="$GITHUB_WORKSPACE/test-project"
             exe_names="-name test-project -o -name test-project.exe"
           fi
-          found_bin=$(find . -type f \( $exe_names \) \( -perm -u+x -o -perm -g+x -o -perm -o+x \) 2>/dev/null | head -1)
+          found_bin=$(find "$search_dir" -type f \( $exe_names \) \( -perm -u+x -o -perm -g+x -o -perm -o+x \) 2>/dev/null | head -1)
           if [ -n "$found_bin" ]; then
             echo "bin_path=$build_dir/$found_bin" >> $GITHUB_OUTPUT
             echo "Found: $build_dir/$found_bin"
