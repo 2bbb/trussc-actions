@@ -35,6 +35,10 @@ on:
         description: 'Cache key suffix for busting'
         type: string
         default: 'v1'
+      extra_addons:
+        description: 'Extra addons to clone into TrussC/addons/ (space-separated: owner/repo name [owner/repo name]...)'
+        type: string
+        default: ''
 
 jobs:
   build:
@@ -70,6 +74,18 @@ jobs:
       - name: Link addon into TrussC (Windows)
         if: matrix.platform == 'windows'
         run: New-Item -ItemType SymbolicLink -Path "TrussC\addons\${{ inputs.addon_name }}" -Target "$env:GITHUB_WORKSPACE\${{ inputs.addon_name }}"
+
+      - name: Clone extra addons
+        if: inputs.extra_addons != ''
+        shell: bash
+        run: |
+          read -ra ADDON_PAIRS <<< "${{ inputs.extra_addons }}"
+          for i in $(seq 0 2 $((${#ADDON_PAIRS[@]} - 1))); do
+            REPO="${ADDON_PAIRS[$i]}"
+            NAME="${ADDON_PAIRS[$((i+1))]}"
+            echo "Cloning extra addon: $NAME from $REPO"
+            git clone --depth 1 "https://github.com/$REPO.git" "TrussC/addons/$NAME"
+          done
 
       - name: Install Linux dependencies
         if: matrix.platform == 'linux'
