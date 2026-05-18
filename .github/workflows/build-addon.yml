@@ -34,7 +34,7 @@ on:
       cache_key_suffix:
         description: 'Cache key suffix for busting'
         type: string
-        default: 'v1'
+        default: 'v2'
       extra_addons:
         description: 'Extra addons to clone into TrussC/addons/ (space-separated: owner/repo name [owner/repo name]...)'
         type: string
