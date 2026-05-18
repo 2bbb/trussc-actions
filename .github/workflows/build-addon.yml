@@ -93,6 +93,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential cmake libgl1-mesa-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libgtk-3-dev ${{ inputs.extra_apt_packages }}
 
+      - name: Install TrussC Linux dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          cd TrussC
+          chmod +x tools/install_dependencies_linux.sh
+          sudo ./tools/install_dependencies_linux.sh -y
+
       - name: Setup MSVC
         if: matrix.platform == 'windows'
         uses: ilammy/msvc-dev-cmd@v1
@@ -124,6 +131,9 @@ jobs:
           fi
 
           if [ -f "$trusscli" ]; then
+            if [ "${{ matrix.platform }}" != "windows" ]; then
+              chmod +x "$trusscli"
+            fi
             echo "exists=true" >> "$GITHUB_OUTPUT"
             echo "Using cached trusscli: $trusscli"
           else
@@ -149,8 +159,7 @@ jobs:
         if: matrix.platform == 'linux' && steps.trusscli-check.outputs.exists != 'true'
         run: |
           cd TrussC
-          chmod +x tools/install_dependencies_linux.sh tools/build_linux.sh
-          sudo ./tools/install_dependencies_linux.sh -y
+          chmod +x tools/build_linux.sh
           sed -i 's/read -r -p/#read -r -p/g' tools/build_linux.sh
           sed -i 's|"$SCRIPT_DIR/trusscli"|#&|g' tools/build_linux.sh
           ./tools/build_linux.sh
