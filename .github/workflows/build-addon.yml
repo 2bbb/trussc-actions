@@ -98,15 +98,41 @@ jobs:
         uses: ilammy/msvc-dev-cmd@v1
 
       - name: Cache trusscli build
+        id: trusscli-cache
         uses: actions/cache@v4
         with:
           path: |
             TrussC/core/build-${{ matrix.platform }}
             TrussC/tools/build
-          key: trusscli-${{ matrix.platform }}-${{ inputs.cache_key_suffix }}-${{ inputs.trussc_ref }}
+            TrussC/tools/bin
+            TrussC/tools/trusscli.app
+          key: trusscli-${{ matrix.platform }}-${{ inputs.cache_key_suffix }}-${{ inputs.trussc_ref }}-${{ hashFiles('TrussC/tools/**', 'TrussC/core/**', 'TrussC/CMakeLists.txt') }}
+          restore-keys: |
+            trusscli-${{ matrix.platform }}-${{ inputs.cache_key_suffix }}-${{ inputs.trussc_ref }}-
+
+      - name: Check cached trusscli
+        id: trusscli-check
+        shell: bash
+        run: |
+          trusscli=""
+          if [ "${{ matrix.platform }}" = "macos" ]; then
+            trusscli="$GITHUB_WORKSPACE/TrussC/tools/trusscli.app/Contents/MacOS/trusscli"
+          elif [ "${{ matrix.platform }}" = "windows" ]; then
+            trusscli="$GITHUB_WORKSPACE/TrussC/tools/bin/trusscli.exe"
+          else
+            trusscli="$GITHUB_WORKSPACE/TrussC/tools/bin/trusscli"
+          fi
+
+          if [ -f "$trusscli" ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Using cached trusscli: $trusscli"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "No cached trusscli binary found for ${{ matrix.platform }}"
+          fi
 
       - name: Build trusscli (macOS)
-        if: matrix.platform == 'macos'
+        if: matrix.platform == 'macos' && steps.trusscli-check.outputs.exists != 'true'
         run: |
           cd TrussC
           sed -i '' 's/read -r -p/#read -r -p/g' tools/build_mac.command
@@ -114,19 +140,19 @@ jobs:
           ./tools/build_mac.command
 
       - name: Build trusscli (Windows)
-        if: matrix.platform == 'windows'
+        if: matrix.platform == 'windows' && steps.trusscli-check.outputs.exists != 'true'
         run: |
           cd TrussC
           ./tools/build_win.bat
 
       - name: Build trusscli (Linux)
-        if: matrix.platform == 'linux'
+        if: matrix.platform == 'linux' && steps.trusscli-check.outputs.exists != 'true'
         run: |
           cd TrussC
           chmod +x tools/install_dependencies_linux.sh tools/build_linux.sh
           sudo ./tools/install_dependencies_linux.sh -y
           sed -i 's/read -r -p/#read -r -p/g' tools/build_linux.sh
-          sed -i 's|\"$SCRIPT_DIR/trusscli\"|#&|g' tools/build_linux.sh
+          sed -i 's|"$SCRIPT_DIR/trusscli"|#&|g' tools/build_linux.sh
           ./tools/build_linux.sh
 
       - name: Generate test project
