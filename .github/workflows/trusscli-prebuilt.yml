@@ -1,0 +1,189 @@
+name: trusscli-prebuilt
+
+on:
+  workflow_dispatch:
+    inputs:
+      trussc_ref:
+        description: 'Exact TrussC ref/tag to build'
+        required: true
+        default: 'v0.6.0'
+      release_tag:
+        description: 'Release tag to publish prebuilt assets to'
+        required: true
+        default: 'trusscli-v0.6.0-build-addon-prebuilt-v1'
+      overwrite_assets:
+        description: 'Delete matching existing assets before upload'
+        required: false
+        default: 'false'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [macos, windows, linux]
+        include:
+          - platform: macos
+            runner: macos-14
+          - platform: windows
+            runner: windows-latest
+          - platform: linux
+            runner: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Clone TrussC
+        run: git clone --depth 1 --branch ${{ inputs.trussc_ref }} https://github.com/TrussC-org/TrussC.git TrussC
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake libgl1-mesa-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libgtk-3-dev
+
+      - name: Install TrussC Linux dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          cd TrussC
+          chmod +x tools/install_dependencies_linux.sh
+          sudo ./tools/install_dependencies_linux.sh -y
+
+      - name: Setup MSVC
+        if: matrix.platform == 'windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Build trusscli (macOS)
+        if: matrix.platform == 'macos'
+        run: |
+          cd TrussC
+          sed -i '' 's/read -r -p/#read -r -p/g' tools/build_mac.command
+          sed -i '' 's/open /#open /g' tools/build_mac.command
+          ./tools/build_mac.command
+
+      - name: Build trusscli (Windows)
+        if: matrix.platform == 'windows'
+        run: |
+          cd TrussC
+          ./tools/build_win.bat
+
+      - name: Build trusscli (Linux)
+        if: matrix.platform == 'linux'
+        run: |
+          cd TrussC
+          chmod +x tools/build_linux.sh
+          sed -i 's/read -r -p/#read -r -p/g' tools/build_linux.sh
+          sed -i 's|"$SCRIPT_DIR/trusscli"|#&|g' tools/build_linux.sh
+          ./tools/build_linux.sh
+
+      - name: Package prebuilt
+        shell: bash
+        run: |
+          set -euo pipefail
+          arch="$(uname -m)"
+          asset="trusscli-${{ matrix.platform }}-${arch}.tar.gz"
+          metadata="trusscli-${{ matrix.platform }}-${arch}.metadata.json"
+          sha_file="${asset}.sha256"
+          export ASSET="$asset"
+          export METADATA="$metadata"
+          export SHA_FILE="$sha_file"
+          export ARCH="$arch"
+          if [ "${{ matrix.platform }}" = "macos" ]; then
+            trusscli_rel="trusscli.app/Contents/MacOS/trusscli"
+          elif [ "${{ matrix.platform }}" = "windows" ]; then
+            trusscli_rel="bin/trusscli.exe"
+          else
+            trusscli_rel="bin/trusscli"
+          fi
+          trusscli="TrussC/tools/$trusscli_rel"
+          test -f "$trusscli"
+          if [ "${{ matrix.platform }}" != "windows" ]; then
+            chmod +x "$trusscli"
+          fi
+          python3 - <<'PY'
+          import os
+          import pathlib
+          import subprocess
+          trusscli = pathlib.Path(os.environ['TRUSSCLI'])
+          result = subprocess.run([str(trusscli), '--help'], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=20)
+          print(result.stdout[:4000])
+          if result.returncode != 0:
+              raise SystemExit(f'trusscli --help failed with exit code {result.returncode}')
+          PY
+          mkdir -p dist
+          tar -C TrussC/tools -czf "dist/$asset" "$trusscli_rel"
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import platform
+          import subprocess
+          asset = pathlib.Path('dist') / os.environ['ASSET']
+          trusscli = pathlib.Path(os.environ['TRUSSCLI'])
+          data = {
+              'schema': 1,
+              'platform': os.environ['PLATFORM_NAME'],
+              'runner_os': os.environ.get('RUNNER_OS', ''),
+              'runner_arch': os.environ.get('RUNNER_ARCH', ''),
+              'uname_machine': platform.machine(),
+              'arch': os.environ['ARCH'],
+              'trussc_ref': os.environ['TRUSSC_REF'],
+              'trussc_commit': subprocess.check_output(['git', '-C', 'TrussC', 'rev-parse', 'HEAD'], text=True).strip(),
+              'trussc_actions_commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
+              'release_tag': os.environ['RELEASE_TAG'],
+              'asset_name': os.environ['ASSET'],
+              'asset_sha256': hashlib.sha256(asset.read_bytes()).hexdigest(),
+              'binary_relative_path': os.environ['TRUSSCLI_REL'],
+              'binary_sha256': hashlib.sha256(trusscli.read_bytes()).hexdigest(),
+              'binary_size': trusscli.stat().st_size,
+              'executable': os.access(trusscli, os.X_OK),
+          }
+          pathlib.Path('dist', os.environ['METADATA']).write_text(json.dumps(data, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+          pathlib.Path('dist', os.environ['SHA_FILE']).write_text(f"{data['asset_sha256']}  {os.environ['ASSET']}\n", encoding='utf-8')
+          print('PREBUILT_TRUSSCLI_IDENTITY ' + json.dumps(data, sort_keys=True))
+          PY
+        env:
+          PLATFORM_NAME: ${{ matrix.platform }}
+          TRUSSC_REF: ${{ inputs.trussc_ref }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          TRUSSCLI: ${{ matrix.platform == 'macos' && 'TrussC/tools/trusscli.app/Contents/MacOS/trusscli' || matrix.platform == 'windows' && 'TrussC/tools/bin/trusscli.exe' || 'TrussC/tools/bin/trusscli' }}
+          TRUSSCLI_REL: ${{ matrix.platform == 'macos' && 'trusscli.app/Contents/MacOS/trusscli' || matrix.platform == 'windows' && 'bin/trusscli.exe' || 'bin/trusscli' }}
+
+      - name: Upload prebuilt artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: trusscli-${{ matrix.platform }}-${{ runner.arch == 'X64' && 'x86_64' || runner.arch }}
+          path: dist/*
+
+  publish:
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist-artifacts
+          merge-multiple: true
+
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          OVERWRITE_ASSETS: ${{ inputs.overwrite_assets }}
+        run: |
+          set -euo pipefail
+          if ! gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --title "$RELEASE_TAG" --notes "Prebuilt trusscli assets for TrussC ${{ inputs.trussc_ref }}."
+          fi
+          if [ "$OVERWRITE_ASSETS" = "true" ]; then
+            for asset in dist-artifacts/*; do
+              name="$(basename "$asset")"
+              if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | grep -Fx "$name" >/dev/null; then
+                gh release delete-asset "$RELEASE_TAG" "$name" --repo "$GITHUB_REPOSITORY" --yes
+              fi
+            done
+          fi
+          gh release upload "$RELEASE_TAG" dist-artifacts/* --repo "$GITHUB_REPOSITORY"

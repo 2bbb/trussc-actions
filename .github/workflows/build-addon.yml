@@ -39,6 +39,18 @@ on:
         description: 'Extra addons to clone into TrussC/addons/ (space-separated: owner/repo name [owner/repo name]...)'
         type: string
         default: ''
+      trusscli_prebuilt:
+        description: 'auto | off | strict. auto tries a release prebuilt then falls back to cache/build; strict fails if unavailable.'
+        type: string
+        default: 'auto'
+      trusscli_prebuilt_repo:
+        description: 'Repository containing trusscli prebuilt release assets.'
+        type: string
+        default: '2bbb/trussc-actions'
+      trusscli_prebuilt_tag:
+        description: 'Exact release tag containing trusscli prebuilt assets. Required for prebuilt auto/strict.'
+        type: string
+        default: ''
 
 jobs:
   build:
@@ -104,8 +116,128 @@ jobs:
         if: matrix.platform == 'windows'
         uses: ilammy/msvc-dev-cmd@v1
 
+      - name: Resolve trusscli path
+        id: trusscli-path
+        shell: bash
+        run: |
+          arch="$(uname -m)"
+          if [ "${{ matrix.platform }}" = "macos" ]; then
+            trusscli="$GITHUB_WORKSPACE/TrussC/tools/trusscli.app/Contents/MacOS/trusscli"
+          elif [ "${{ matrix.platform }}" = "windows" ]; then
+            trusscli="$GITHUB_WORKSPACE/TrussC/tools/bin/trusscli.exe"
+          else
+            trusscli="$GITHUB_WORKSPACE/TrussC/tools/bin/trusscli"
+          fi
+          echo "path=$trusscli" >> "$GITHUB_OUTPUT"
+          echo "arch=$arch" >> "$GITHUB_OUTPUT"
+          echo "asset=trusscli-${{ matrix.platform }}-${arch}.tar.gz" >> "$GITHUB_OUTPUT"
+          echo "metadata=trusscli-${{ matrix.platform }}-${arch}.metadata.json" >> "$GITHUB_OUTPUT"
+          echo "sha=trusscli-${{ matrix.platform }}-${arch}.tar.gz.sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Acquire prebuilt trusscli
+        id: trusscli-prebuilt
+        if: inputs.trusscli_prebuilt != 'off'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREBUILT_MODE: ${{ inputs.trusscli_prebuilt }}
+          PREBUILT_REPO: ${{ inputs.trusscli_prebuilt_repo }}
+          PREBUILT_TAG: ${{ inputs.trusscli_prebuilt_tag }}
+          PREBUILT_ASSET: ${{ steps.trusscli-path.outputs.asset }}
+          PREBUILT_METADATA: ${{ steps.trusscli-path.outputs.metadata }}
+          PREBUILT_SHA: ${{ steps.trusscli-path.outputs.sha }}
+          TRUSSCLI_PATH: ${{ steps.trusscli-path.outputs.path }}
+        run: |
+          set -euo pipefail
+          echo "used=false" >> "$GITHUB_OUTPUT"
+          if [ -z "$PREBUILT_TAG" ]; then
+            message="trusscli prebuilt tag is empty; skipping prebuilt acquisition"
+            if [ "$PREBUILT_MODE" = "strict" ]; then
+              echo "::error::$message"
+              exit 1
+            fi
+            echo "::notice::$message"
+            exit 0
+          fi
+
+          mkdir -p "$RUNNER_TEMP/trusscli-prebuilt"
+          echo "Attempting trusscli prebuilt download"
+          echo "repo=$PREBUILT_REPO"
+          echo "tag=$PREBUILT_TAG"
+          echo "asset=$PREBUILT_ASSET"
+          echo "metadata=$PREBUILT_METADATA"
+          echo "sha=$PREBUILT_SHA"
+          if ! gh release download "$PREBUILT_TAG" --repo "$PREBUILT_REPO" --pattern "$PREBUILT_ASSET" --pattern "$PREBUILT_METADATA" --pattern "$PREBUILT_SHA" --dir "$RUNNER_TEMP/trusscli-prebuilt"; then
+            if [ "$PREBUILT_MODE" = "strict" ]; then
+              echo "::error::strict trusscli prebuilt download failed"
+              exit 1
+            fi
+            echo "::warning::trusscli prebuilt unavailable; falling back to cache/build"
+            exit 0
+          fi
+
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import tarfile
+          import sys
+
+          root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'trusscli-prebuilt'
+          asset = root / os.environ['PREBUILT_ASSET']
+          metadata = root / os.environ['PREBUILT_METADATA']
+          sha_file = root / os.environ['PREBUILT_SHA']
+          trusscli = pathlib.Path(os.environ['TRUSSCLI_PATH'])
+          if not asset.is_file() or not metadata.is_file() or not sha_file.is_file():
+              raise SystemExit('prebuilt asset, metadata, or checksum file is missing')
+          digest = hashlib.sha256(asset.read_bytes()).hexdigest()
+          expected = sha_file.read_text(encoding='utf-8').split()[0]
+          if digest != expected:
+              raise SystemExit(f'prebuilt sha256 mismatch: expected {expected}, got {digest}')
+          data = json.loads(metadata.read_text(encoding='utf-8'))
+          required = ['platform', 'arch', 'trussc_ref', 'trussc_commit', 'trussc_actions_commit', 'asset_name', 'asset_sha256']
+          missing = [key for key in required if not data.get(key)]
+          if missing:
+              raise SystemExit(f'prebuilt metadata missing fields: {missing}')
+          if data['asset_name'] != os.environ['PREBUILT_ASSET']:
+              raise SystemExit(f'prebuilt metadata asset mismatch: {data["asset_name"]}')
+          if data['asset_sha256'] != digest:
+              raise SystemExit('prebuilt metadata sha256 does not match asset')
+          trusscli.parent.mkdir(parents=True, exist_ok=True)
+          with tarfile.open(asset, 'r:gz') as archive:
+              archive.extractall(pathlib.Path(os.environ['GITHUB_WORKSPACE']) / 'TrussC' / 'tools')
+          if not trusscli.is_file():
+              raise SystemExit(f'prebuilt extraction did not create {trusscli}')
+          print('PREBUILT_TRUSSCLI_IDENTITY ' + json.dumps(data, sort_keys=True))
+          print(f'prebuilt_binary_path={trusscli}')
+          print(f'prebuilt_binary_sha256={hashlib.sha256(trusscli.read_bytes()).hexdigest()}')
+          PY
+
+          if [ "${{ matrix.platform }}" != "windows" ]; then
+            chmod +x "$TRUSSCLI_PATH"
+          fi
+          if [ ! -x "$TRUSSCLI_PATH" ] && [ "${{ matrix.platform }}" != "windows" ]; then
+            echo "::error::prebuilt trusscli is not executable: $TRUSSCLI_PATH"
+            exit 1
+          fi
+          python3 - <<'PY'
+          import os
+          import pathlib
+          import subprocess
+          import sys
+          trusscli = pathlib.Path(os.environ['TRUSSCLI_PATH'])
+          result = subprocess.run([str(trusscli), '--help'], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=20)
+          print(result.stdout[:4000])
+          if result.returncode != 0:
+              raise SystemExit(f'trusscli --help failed with exit code {result.returncode}')
+          PY
+          echo "used=true" >> "$GITHUB_OUTPUT"
+          echo "Using verified prebuilt trusscli: $TRUSSCLI_PATH"
+
       - name: Cache trusscli build
         id: trusscli-cache
+        if: steps.trusscli-prebuilt.outputs.used != 'true'
         uses: actions/cache@v4
         with:
           path: |
@@ -121,25 +253,28 @@ jobs:
         id: trusscli-check
         shell: bash
         run: |
-          trusscli=""
-          if [ "${{ matrix.platform }}" = "macos" ]; then
-            trusscli="$GITHUB_WORKSPACE/TrussC/tools/trusscli.app/Contents/MacOS/trusscli"
-          elif [ "${{ matrix.platform }}" = "windows" ]; then
-            trusscli="$GITHUB_WORKSPACE/TrussC/tools/bin/trusscli.exe"
-          else
-            trusscli="$GITHUB_WORKSPACE/TrussC/tools/bin/trusscli"
-          fi
+          trusscli="${{ steps.trusscli-path.outputs.path }}"
 
           if [ -f "$trusscli" ]; then
             if [ "${{ matrix.platform }}" != "windows" ]; then
               chmod +x "$trusscli"
             fi
             echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "Using cached trusscli: $trusscli"
+            echo "Using existing trusscli: $trusscli"
+            python3 - <<'PY'
+            import hashlib
+            import os
+            import pathlib
+            path = pathlib.Path(os.environ['TRUSSCLI_PATH'])
+            print(f'trusscli_binary_path={path}')
+            print(f'trusscli_binary_sha256={hashlib.sha256(path.read_bytes()).hexdigest()}')
+            PY
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
-            echo "No cached trusscli binary found for ${{ matrix.platform }}"
+            echo "No trusscli binary found for ${{ matrix.platform }}"
           fi
+        env:
+          TRUSSCLI_PATH: ${{ steps.trusscli-path.outputs.path }}
 
       - name: Build trusscli (macOS)
         if: matrix.platform == 'macos' && steps.trusscli-check.outputs.exists != 'true'
@@ -172,14 +307,7 @@ jobs:
           echo "${{ inputs.addon_name }}" > addons.make
           printf '#include "${{ inputs.addon_name }}.h"\nint main() { return 0; }\n' > src/main.cpp
 
-          trusscli=""
-          if [ "${{ matrix.platform }}" = "macos" ]; then
-            trusscli="$GITHUB_WORKSPACE/TrussC/tools/trusscli.app/Contents/MacOS/trusscli"
-          elif [ "${{ matrix.platform }}" = "windows" ]; then
-            trusscli="$GITHUB_WORKSPACE/TrussC/tools/bin/trusscli.exe"
-          else
-            trusscli="$GITHUB_WORKSPACE/TrussC/tools/bin/trusscli"
-          fi
+          trusscli="${{ steps.trusscli-path.outputs.path }}"
           "$trusscli" update -p .
 
       - name: Use existing test app
@@ -187,14 +315,7 @@ jobs:
         shell: bash
         run: |
           cd "$GITHUB_WORKSPACE/${{ inputs.addon_name }}/${{ inputs.test_app }}"
-          trusscli=""
-          if [ "${{ matrix.platform }}" = "macos" ]; then
-            trusscli="$GITHUB_WORKSPACE/TrussC/tools/trusscli.app/Contents/MacOS/trusscli"
-          elif [ "${{ matrix.platform }}" = "windows" ]; then
-            trusscli="$GITHUB_WORKSPACE/TrussC/tools/bin/trusscli.exe"
-          else
-            trusscli="$GITHUB_WORKSPACE/TrussC/tools/bin/trusscli"
-          fi
+          trusscli="${{ steps.trusscli-path.outputs.path }}"
           "$trusscli" update -p .
 
       - name: Build
@@ -259,6 +380,6 @@ jobs:
             exit 1
           fi
           if [ "${{ inputs.test_mode }}" = "test" ] && [ "$CODE" -ne 0 ]; then
-            echo "::error::Tests failed (exit code $CODE)"
+            echo "::error::Test failed with exit code $CODE"
             exit 1
           fi
