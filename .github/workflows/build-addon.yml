@@ -51,6 +51,10 @@ on:
         description: 'Exact release tag containing trusscli prebuilt assets. Required for prebuilt auto/strict.'
         type: string
         default: ''
+      linux_ccache:
+        description: 'off | auto. Linux-only compiler cache for addon/testApp builds.'
+        type: string
+        default: 'off'
 
 jobs:
   build:
@@ -115,6 +119,18 @@ jobs:
       - name: Setup MSVC
         if: matrix.platform == 'windows'
         uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Validate linux ccache mode
+        shell: bash
+        run: |
+          mode="${{ inputs.linux_ccache }}"
+          case "$mode" in
+            off|auto) ;;
+            *)
+              echo "::error::linux_ccache must be off or auto, got '$mode'"
+              exit 1
+              ;;
+          esac
 
       - name: Resolve trusscli path
         id: trusscli-path
@@ -354,9 +370,48 @@ jobs:
           sed -i 's|"$SCRIPT_DIR/trusscli"|#&|g' tools/build_linux.sh
           ./tools/build_linux.sh
 
+      - name: Install Linux ccache
+        if: matrix.platform == 'linux' && inputs.linux_ccache != 'off'
+        run: sudo apt-get install -y ccache
+
+      - name: Restore Linux ccache
+        id: linux-ccache
+        if: matrix.platform == 'linux' && inputs.linux_ccache != 'off'
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: linux-ccache-${{ matrix.config }}-${{ inputs.trussc_ref }}-${{ inputs.cache_key_suffix }}-${{ github.repository }}-${{ github.sha }}
+          restore-keys: |
+            linux-ccache-${{ matrix.config }}-${{ inputs.trussc_ref }}-${{ inputs.cache_key_suffix }}-${{ github.repository }}-
+            linux-ccache-${{ matrix.config }}-${{ inputs.trussc_ref }}-${{ inputs.cache_key_suffix }}-
+
+      - name: Configure Linux ccache
+        if: matrix.platform == 'linux' && inputs.linux_ccache != 'off'
+        shell: bash
+        env:
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
+          CCACHE_BASEDIR: ${{ github.workspace }}
+          CCACHE_NOHASHDIR: 'true'
+        run: |
+          set -euo pipefail
+          ccache --set-config=max_size=500M
+          ccache --set-config=compression=true
+          ccache --zero-stats
+          echo "CCACHE_DIR=$CCACHE_DIR"
+          echo "CCACHE_BASEDIR=$CCACHE_BASEDIR"
+          echo "CCACHE_NOHASHDIR=$CCACHE_NOHASHDIR"
+          ccache --show-config
+          ccache --show-stats
+
       - name: Generate test project
         if: inputs.test_app == ''
         shell: bash
+        env:
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
+          CCACHE_BASEDIR: ${{ github.workspace }}
+          CCACHE_NOHASHDIR: 'true'
+          CMAKE_C_COMPILER_LAUNCHER: ${{ matrix.platform == 'linux' && inputs.linux_ccache != 'off' && 'ccache' || '' }}
+          CMAKE_CXX_COMPILER_LAUNCHER: ${{ matrix.platform == 'linux' && inputs.linux_ccache != 'off' && 'ccache' || '' }}
         run: |
           mkdir -p test-project/src && cd test-project
           echo "${{ inputs.addon_name }}" > addons.make
@@ -368,6 +423,12 @@ jobs:
       - name: Use existing test app
         if: inputs.test_app != ''
         shell: bash
+        env:
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
+          CCACHE_BASEDIR: ${{ github.workspace }}
+          CCACHE_NOHASHDIR: 'true'
+          CMAKE_C_COMPILER_LAUNCHER: ${{ matrix.platform == 'linux' && inputs.linux_ccache != 'off' && 'ccache' || '' }}
+          CMAKE_CXX_COMPILER_LAUNCHER: ${{ matrix.platform == 'linux' && inputs.linux_ccache != 'off' && 'ccache' || '' }}
         run: |
           cd "$GITHUB_WORKSPACE/${{ inputs.addon_name }}/${{ inputs.test_app }}"
           trusscli="${{ steps.trusscli-path.outputs.path }}"
@@ -376,7 +437,16 @@ jobs:
       - name: Build
         id: build
         shell: bash
+        env:
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
+          CCACHE_BASEDIR: ${{ github.workspace }}
+          CCACHE_NOHASHDIR: 'true'
         run: |
+          if [ "${{ matrix.platform }}" = "linux" ] && [ "${{ inputs.linux_ccache }}" != "off" ]; then
+            echo "ccache stats before build"
+            ccache --show-stats
+          fi
+
           if [ -n "${{ inputs.test_app }}" ]; then
             build_dir="$GITHUB_WORKSPACE/${{ inputs.addon_name }}/${{ inputs.test_app }}/build-${{ matrix.platform }}"
           else
@@ -384,6 +454,11 @@ jobs:
           fi
           cd "$build_dir"
           cmake --build . --config ${{ matrix.config }}
+
+          if [ "${{ matrix.platform }}" = "linux" ] && [ "${{ inputs.linux_ccache }}" != "off" ]; then
+            echo "ccache stats after build"
+            ccache --show-stats
+          fi
 
           if [ -n "${{ inputs.test_app }}" ]; then
             search_dir="$GITHUB_WORKSPACE/${{ inputs.addon_name }}/${{ inputs.test_app }}"
