@@ -147,6 +147,9 @@ jobs:
           PREBUILT_METADATA: ${{ steps.trusscli-path.outputs.metadata }}
           PREBUILT_SHA: ${{ steps.trusscli-path.outputs.sha }}
           TRUSSCLI_PATH: ${{ steps.trusscli-path.outputs.path }}
+          MATRIX_PLATFORM: ${{ matrix.platform }}
+          PREBUILT_ARCH: ${{ steps.trusscli-path.outputs.arch }}
+          TRUSSC_REF: ${{ inputs.trussc_ref }}
         run: |
           set -euo pipefail
           echo "used=false" >> "$GITHUB_OUTPUT"
@@ -181,37 +184,96 @@ jobs:
           import json
           import os
           import pathlib
+          import subprocess
           import tarfile
-          import sys
+
+          def sha256_file(path):
+              digest = hashlib.sha256()
+              with path.open('rb') as handle:
+                  for chunk in iter(lambda: handle.read(1024 * 1024), b''):
+                      digest.update(chunk)
+              return digest.hexdigest()
+
+          def relative_to_or_fail(path, root):
+              try:
+                  return path.resolve().relative_to(root.resolve())
+              except ValueError as exc:
+                  raise SystemExit(f'unsafe archive member path: {path}') from exc
+
+          def safe_extract(archive, destination):
+              destination.mkdir(parents=True, exist_ok=True)
+              for member in archive.getmembers():
+                  if member.issym() or member.islnk():
+                      raise SystemExit(f'unsafe archive link member: {member.name}')
+                  target = destination / member.name
+                  relative_to_or_fail(target, destination)
+              archive.extractall(destination)
 
           root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'trusscli-prebuilt'
+          workspace = pathlib.Path(os.environ['GITHUB_WORKSPACE'])
+          tools_root = workspace / 'TrussC' / 'tools'
           asset = root / os.environ['PREBUILT_ASSET']
           metadata = root / os.environ['PREBUILT_METADATA']
           sha_file = root / os.environ['PREBUILT_SHA']
           trusscli = pathlib.Path(os.environ['TRUSSCLI_PATH'])
+          expected_binary_rel = trusscli.resolve().relative_to(tools_root.resolve()).as_posix()
           if not asset.is_file() or not metadata.is_file() or not sha_file.is_file():
               raise SystemExit('prebuilt asset, metadata, or checksum file is missing')
-          digest = hashlib.sha256(asset.read_bytes()).hexdigest()
-          expected = sha_file.read_text(encoding='utf-8').split()[0]
-          if digest != expected:
-              raise SystemExit(f'prebuilt sha256 mismatch: expected {expected}, got {digest}')
+
+          asset_digest = sha256_file(asset)
+          expected_asset_digest = sha_file.read_text(encoding='utf-8').split()[0]
+          if asset_digest != expected_asset_digest:
+              raise SystemExit(f'prebuilt sha256 mismatch: expected {expected_asset_digest}, got {asset_digest}')
+
           data = json.loads(metadata.read_text(encoding='utf-8'))
-          required = ['platform', 'arch', 'trussc_ref', 'trussc_commit', 'trussc_actions_commit', 'asset_name', 'asset_sha256']
+          required = [
+              'platform',
+              'arch',
+              'trussc_ref',
+              'trussc_commit',
+              'trussc_actions_commit',
+              'release_tag',
+              'asset_name',
+              'asset_sha256',
+              'binary_relative_path',
+              'binary_sha256',
+          ]
           missing = [key for key in required if not data.get(key)]
           if missing:
               raise SystemExit(f'prebuilt metadata missing fields: {missing}')
-          if data['asset_name'] != os.environ['PREBUILT_ASSET']:
-              raise SystemExit(f'prebuilt metadata asset mismatch: {data["asset_name"]}')
-          if data['asset_sha256'] != digest:
-              raise SystemExit('prebuilt metadata sha256 does not match asset')
+
+          local_trussc_commit = subprocess.check_output(
+              ['git', '-C', str(workspace / 'TrussC'), 'rev-parse', 'HEAD'],
+              text=True,
+          ).strip()
+          expected_metadata = {
+              'platform': os.environ['MATRIX_PLATFORM'],
+              'arch': os.environ['PREBUILT_ARCH'],
+              'release_tag': os.environ['PREBUILT_TAG'],
+              'trussc_ref': os.environ['TRUSSC_REF'],
+              'trussc_commit': local_trussc_commit,
+              'asset_name': os.environ['PREBUILT_ASSET'],
+              'asset_sha256': asset_digest,
+              'binary_relative_path': expected_binary_rel,
+          }
+          for key, expected in expected_metadata.items():
+              actual = data.get(key)
+              if actual != expected:
+                  raise SystemExit(f'prebuilt metadata {key} mismatch: expected {expected}, got {actual}')
+
           trusscli.parent.mkdir(parents=True, exist_ok=True)
           with tarfile.open(asset, 'r:gz') as archive:
-              archive.extractall(pathlib.Path(os.environ['GITHUB_WORKSPACE']) / 'TrussC' / 'tools')
+              safe_extract(archive, tools_root)
           if not trusscli.is_file():
               raise SystemExit(f'prebuilt extraction did not create {trusscli}')
+
+          binary_digest = sha256_file(trusscli)
+          if data.get('binary_sha256') != binary_digest:
+              raise SystemExit(f'prebuilt binary sha256 mismatch: expected {data.get("binary_sha256")}, got {binary_digest}')
+
           print('PREBUILT_TRUSSCLI_IDENTITY ' + json.dumps(data, sort_keys=True))
           print(f'prebuilt_binary_path={trusscli}')
-          print(f'prebuilt_binary_sha256={hashlib.sha256(trusscli.read_bytes()).hexdigest()}')
+          print(f'prebuilt_binary_sha256={binary_digest}')
           PY
 
           if [ "${{ matrix.platform }}" != "windows" ]; then
