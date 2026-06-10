@@ -261,14 +261,7 @@ jobs:
             fi
             echo "exists=true" >> "$GITHUB_OUTPUT"
             echo "Using existing trusscli: $trusscli"
-            python3 - <<'PY'
-            import hashlib
-            import os
-            import pathlib
-            path = pathlib.Path(os.environ['TRUSSCLI_PATH'])
-            print(f'trusscli_binary_path={path}')
-            print(f'trusscli_binary_sha256={hashlib.sha256(path.read_bytes()).hexdigest()}')
-            PY
+            python3 -c "import hashlib, os, pathlib; path = pathlib.Path(os.environ['TRUSSCLI_PATH']); print(f'trusscli_binary_path={path}'); print(f'trusscli_binary_sha256={hashlib.sha256(path.read_bytes()).hexdigest()}')"
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
             echo "No trusscli binary found for ${{ matrix.platform }}"
